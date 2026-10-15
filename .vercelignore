@@ -1,0 +1,11 @@
+.agents/
+.clerk/
+.local/
+.env*
+.git/
+node_modules/
+tests/
+DESIGN.md
+AGENTS.md
+docs/
+SPEC.md
