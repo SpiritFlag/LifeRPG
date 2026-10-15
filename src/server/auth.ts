@@ -89,7 +89,9 @@ export async function authenticateMcp(request: Request): Promise<McpPrincipal> {
   // BAPI expiration is seconds; some SDK JWT paths normalize it to milliseconds.
   const expirationMs = typeof token.expiration === 'number'
     ? token.expiration < 1e12 ? token.expiration * 1000 : token.expiration : 0;
-  if (token.revoked || token.expired || token.type !== 'oauth_token' ||
+  // The dedicated OAuth verifier rejects web sessions. Its BAPI resource can
+  // omit `type` (the published verify response does); JWT-normalized paths set it.
+  if (token.revoked || token.expired || (token.type !== undefined && token.type !== 'oauth_token') ||
       !Number.isFinite(expirationMs) || expirationMs <= Date.now() ||
       !Array.isArray(token.aud) || !token.aud.includes(resource) ||
       !Array.isArray(token.scopes) || !token.scopes.every(scope => typeof scope === 'string')) {

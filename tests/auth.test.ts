@@ -37,7 +37,8 @@ beforeEach(() => {
   process.env.OWNER_CLERK_USER_ID = 'user_owner';
   process.env.MCP_ALLOWED_CLIENT_IDS = 'client_allowed';
   session = { userId: 'user_owner' };
-  token = { subject: 'user_owner', clientId: 'client_allowed', type: 'oauth_token', scopes: ['life:read'], aud: ['http://localhost:3000/mcp'], expiration: Math.floor(Date.now() / 1000) + 600, revoked: false, expired: false };
+  // Real BAPI OAuth verification omits type; the dedicated verifier establishes it.
+  token = { subject: 'user_owner', clientId: 'client_allowed', scopes: ['life:read'], aud: ['http://localhost:3000/mcp'], expiration: Math.floor(Date.now() / 1000) + 600, revoked: false, expired: false };
   verified = []; verificationError = false; middlewareCalls = 0;
 });
 const bearer = (value = 'real-looking-opaque-token') => new Request('http://localhost:3000/mcp', { headers: { authorization: `Bearer ${value}` } });
@@ -57,6 +58,7 @@ test('MCP delegates opaque verification with exact resource audience and enforce
   assert.deepEqual(verified[0], ['real-looking-opaque-token', { audience: 'http://localhost:3000/mcp' }]);
   await rejects(() => auth.requireMcpOwner(bearer(), 'life:write'), 403);
   token.expiration = Date.now() + 600000;
+  token.type = 'oauth_token';
   assert.equal((await auth.authenticateMcp(bearer())).ownerId, 'user_owner');
 });
 test('MCP rejects missing, malformed and unverified credentials', async () => {
