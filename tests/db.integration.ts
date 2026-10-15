@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { config } from 'dotenv';
 import { sql } from 'drizzle-orm';
 import { getDB,useDatabaseForTest,closeDatabase,rows,type SqlDB } from '../src/server/db';
-import { submitCommand as submitRaw,readPlayer,continueJob as continueRaw,deleteEvent,useGMForTest } from '../src/server/service';
+import { submitCommand as submitRaw,readPlayer,continueJob as continueRaw,deleteEvent,useGMForTest,useQueueDispatcherForTest,runQueuedJob } from '../src/server/service';
 import { inspectReceipt,type Receipt } from '../src/server/gm';
 import type { GMEnvelope,CommandInput } from '../src/lib/contracts';
 
@@ -17,14 +17,16 @@ let calls=0;
 let gate:Promise<void>|null=null;
 const observed:Promise<void>[]=[];
 const observe=(promise:Promise<void>)=>{observed.push(promise);};
-async function submitCommand(...args:Parameters<typeof submitRaw>) {const result=await submitRaw(...args);if(result.judgmentStatus==='running'&&!gate){await Promise.all(observed);return (await readPlayer(args[0])).jobs.find(j=>j.jobId===result.jobId)!;}return result;}
-async function continueJob(...args:Parameters<typeof continueRaw>) {const result=await continueRaw(...args);if(result.judgmentStatus==='running'&&!gate){await Promise.all(observed);return (await readPlayer(args[0])).jobs.find(j=>j.jobId===result.jobId)!;}return result;}
+async function flushBackground(){let seen=-1;while(seen!==observed.length){seen=observed.length;await Promise.all(observed);}}
+async function submitCommand(...args:Parameters<typeof submitRaw>) {const result=await submitRaw(...args);if(result.judgmentStatus==='running'&&!gate){await flushBackground();return (await readPlayer(args[0])).jobs.find(j=>j.jobId===result.jobId)!;}return result;}
+async function continueJob(...args:Parameters<typeof continueRaw>) {const result=await continueRaw(...args);if(result.judgmentStatus==='running'&&!gate){await flushBackground();return (await readPlayer(args[0])).jobs.find(j=>j.jobId===result.jobId)!;}return result;}
 const envelope:GMEnvelope={contractVersion:'liferpg.1',decision:'apply',recordAccepted:true,question:null,title:'합성 수신 검증',scene:'합성 장면',changes:['합성 변화'],level:1,totalXp:0,alive:true,abilities:[],entities:[{id:'hero',kind:'character',name:'합성 여행자',summary:'합성 탄생',detail:'합성 본문',visibility:'public',truth:'canon',relatedIds:[],quantity:null,status:null,attributes:[],realTaskId:null}],questCompletions:[],rationale:'GM_SECRET_SYNTHETIC',memories:[{id:'identity',kind:'identity',content:'GM_SECRET_SYNTHETIC',reason:'합성 기억',previousId:null,important:true,relatedIds:[]}]};
 let nextEnvelope=envelope,broken=false,usageKnown=true;
 const syntheticAdapter=async()=>{calls++;if(gate)await gate;return receipt();};
 function receipt():Receipt {return inspectReceipt(JSON.stringify({id:'resp_synthetic',status:'completed',model:'synthetic-injection',service_tier:'default',usage:usageKnown?{input_tokens:100,output_tokens:50}:null,output:[{type:'message',content:[{type:'output_text',text:broken?'{broken':JSON.stringify(nextEnvelope)}]}]}),'req_synthetic',200);}
 const cmd=(kind:CommandInput['kind'],revision:number,extra:Partial<CommandInput>={}):CommandInput=>({kind,text:`SYNTHETIC_FACT_${randomUUID()}`,requestKey:randomUUID(),expectedRevision:revision,occurredAt:null,uncertainty:null,targetId:null,consent:null,...extra});
 before(async()=>{
+  useQueueDispatcherForTest(async jobId=>{await runQueuedJob(process.env.OWNER_CLERK_USER_ID!,jobId);});
   realDB=getDB();await realDB.execute(sql.raw(`CREATE SCHEMA ${schema}`));
   testDB={execute:async()=>{throw new Error('Test queries need a transaction');},transaction:async fn=>realDB.transaction(async tx=>{await tx.execute(sql.raw(`SET LOCAL search_path TO ${schema}`));return fn(tx);})};
   useDatabaseForTest(testDB);
@@ -43,15 +45,15 @@ test('Neon DB boundary: receipt, atomic commit, read, idempotency and privacy pr
   await assert.rejects(()=>readPlayer('other-owner'),/OWNER_REQUIRED/);
   const before=JSON.stringify(await readPlayer(owner));await readPlayer(owner);assert.equal(JSON.stringify(await readPlayer(owner)),before);assert.equal(calls,1);
 });
-test('Neon DB boundary: two concurrent claims, waiting order and explicit continuation',async()=>{
+test('Neon DB boundary: concurrent continuation cannot duplicate automatic FIFO execution',async()=>{
   let release!:()=>void;gate=new Promise(resolve=>{release=resolve;});
   const a=submitCommand(owner,cmd('experience',1));
   for(let i=0;i<50;i++){if((await readPlayer(owner)).jobs.some(j=>j.judgmentStatus==='running'))break;await new Promise(r=>setTimeout(r,20));}
   const b=await submitCommand(owner,cmd('experience',1));assert.equal(b.judgmentStatus,'waiting');assert.ok(b.predecessorJobId);
   await Promise.all([continueJob(owner,b.jobId),continueJob(owner,b.jobId)]);assert.equal(calls,2);
-  release();gate=null;await a;await Promise.all(observed);
+  release();gate=null;await a;await flushBackground();
   const before=calls;await readPlayer(owner);assert.equal(calls,before);
-  const done=await continueJob(owner,b.jobId);assert.equal(done.judgmentStatus,'committed');assert.equal(calls,3);
+  const done=(await readPlayer(owner)).jobs.find(j=>j.jobId===b.jobId)!;assert.equal(done.judgmentStatus,'committed');assert.equal(calls,3);
   assert.equal((await readPlayer(owner)).revision,3);
 });
 test('Neon DB boundary: malformed actual-shaped receipt preserves usage and encrypted failure body, forced facts survive failure',async()=>{
@@ -70,7 +72,7 @@ test('Neon DB boundary: deletion revokes late commit and forbids diagnostic rege
   const command=cmd('experience',revision), running=submitCommand(owner,command);
   let job:Awaited<ReturnType<typeof readPlayer>>['jobs'][number]|undefined;
   for(let i=0;i<50;i++){job=(await readPlayer(owner)).jobs.find(j=>j.judgmentStatus==='running');if(job)break;await new Promise(r=>setTimeout(r,20));}
-  assert.ok(job);const result=await deleteEvent(owner,job.eventId!);broken=true;release();gate=null;await running;await Promise.all(observed);broken=false;
+  assert.ok(job);const result=await deleteEvent(owner,job.eventId!);broken=true;release();gate=null;await running;await flushBackground();broken=false;
   const snapshot=await readPlayer(owner);assert.equal(snapshot.revision,result.revision);assert.equal(snapshot.jobs.find(j=>j.jobId===job!.jobId)?.judgmentStatus,'deleted');
   const attempt=(await testDB.transaction(tx=>rows<{diagnostic:unknown;metadata:unknown}>(tx,'SELECT * FROM attempts WHERE job_id=$1',[job!.jobId])))[0];
   assert.equal(attempt.diagnostic,null);assert.deepEqual(attempt.metadata,{});
@@ -201,4 +203,40 @@ test('Neon DB boundary: missing, foreign, deleted and ambiguous memory aliases c
       await deleteEvent(memoryOwner,result.eventId!);
     }
   } finally {process.env.OWNER_CLERK_USER_ID=owner;nextEnvelope=envelope;useGMForTest(syntheticAdapter,observe);}
+});
+
+test('Neon DB boundary: five accepted jobs finish automatically in order with one active model call',async()=>{
+  const queueOwner=`queue_${randomUUID()}`;process.env.OWNER_CLERK_USER_ID=queueOwner;
+  let release!:()=>void,active=0,maxActive=0;const order:string[]=[];
+  gate=new Promise(resolve=>{release=resolve;});
+  try {
+    await testDB.transaction(tx=>rows(tx,'INSERT INTO games(owner,started_at) VALUES($1,now())',[queueOwner]));
+    useGMForTest(async input=>{calls++;active++;maxActive=Math.max(maxActive,active);order.push((input as any).command.text);try{if(gate)await gate;return receipt();}finally{active--; }},observe);
+    const first=submitCommand(queueOwner,cmd('experience',0,{text:'queue-0'}));
+    for(let i=0;i<50;i++){if((await readPlayer(queueOwner)).jobs.some(j=>j.judgmentStatus==='running'))break;await new Promise(r=>setTimeout(r,20));}
+    const queued=[];
+    for(let i=1;i<5;i++){const job=await submitCommand(queueOwner,cmd('experience',0,{text:`queue-${i}`}));assert.equal(job.judgmentStatus,'waiting');assert.equal(job.nextAction,'poll');queued.push(job);}
+    await Promise.all(queued.map(j=>runQueuedJob(queueOwner,j.jobId)));assert.equal(order.length,1);
+    release();gate=null;await first;await flushBackground();
+    assert.deepEqual(order,['queue-0','queue-1','queue-2','queue-3','queue-4']);assert.equal(maxActive,1);
+    const snapshot=await readPlayer(queueOwner);assert.equal(snapshot.revision,5);assert.equal(snapshot.unprocessedCount,0);assert.ok(snapshot.jobs.every(j=>j.judgmentStatus==='committed'));
+    const attempts=await testDB.transaction(tx=>rows<any>(tx,'SELECT job_id,count(*)::int AS count FROM attempts WHERE owner=$1 GROUP BY job_id',[queueOwner]));assert.equal(attempts.length,5);assert.ok(attempts.every(a=>a.count===1));
+    const before=calls;await readPlayer(queueOwner);assert.equal(calls,before);
+  } finally {release?.();gate=null;process.env.OWNER_CLERK_USER_ID=owner;nextEnvelope=envelope;useGMForTest(syntheticAdapter,observe);}
+});
+
+test('Neon DB boundary: a failed job pauses automatic work without repeated paid attempts',async()=>{
+  const queueOwner=`queue_failure_${randomUUID()}`;process.env.OWNER_CLERK_USER_ID=queueOwner;
+  let release!:()=>void;gate=new Promise(resolve=>{release=resolve;});const before=calls;
+  try {
+    await testDB.transaction(tx=>rows(tx,'INSERT INTO games(owner,started_at) VALUES($1,now())',[queueOwner]));
+    const first=submitCommand(queueOwner,cmd('force_record',0));
+    for(let i=0;i<50;i++){if((await readPlayer(queueOwner)).jobs.some(j=>j.judgmentStatus==='running'))break;await new Promise(r=>setTimeout(r,20));}
+    const queued=await submitCommand(queueOwner,cmd('force_record',0));
+    broken=true;release();gate=null;const failed=await first;await flushBackground();
+    assert.equal(failed.judgmentStatus,'failed');assert.equal(calls,before+1);assert.equal(await runQueuedJob(queueOwner,queued.jobId),false);assert.equal(await runQueuedJob(queueOwner,failed.jobId),false);
+    assert.equal((await readPlayer(queueOwner)).jobs.find(j=>j.jobId===queued.jobId)?.judgmentStatus,'waiting');assert.equal(calls,before+1);
+    broken=false;assert.equal((await continueJob(queueOwner,failed.jobId)).judgmentStatus,'committed');await flushBackground();
+    assert.equal((await readPlayer(queueOwner)).unprocessedCount,0);assert.equal(calls,before+3);
+  } finally {release?.();gate=null;broken=false;process.env.OWNER_CLERK_USER_ID=owner;nextEnvelope=envelope;useGMForTest(syntheticAdapter,observe);}
 });

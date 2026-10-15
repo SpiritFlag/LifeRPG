@@ -5,6 +5,7 @@ import { getDB, rows, type SqlDB } from './db';
 import { ServiceError, safeError } from './errors';
 import { callGM, countGMInput, parseEnvelope, validateMeaning, inputUpperBound, MAX_RESERVATION_USD, MAX_INPUT_BYTES, MAX_INPUT_TOKENS, MODEL, MAX_OUTPUT, PROMPT_VERSION, type Receipt, type GameState } from './gm';
 import { encryptDiagnostic } from './diagnostics';
+import { dispatchQueuedJob } from './queue';
 
 interface Game {owner:string;revision:number;privacy_epoch:number;world_sequence:number;started_at:Date|null;active_attempt:string|null;state:GameState;state_sources:string[];}
 interface Job {id:string;owner:string;request_key:string;fingerprint:string|null;command:CommandInput|null;kind:CommandInput['kind'];event_id:string|null;status:JobDTO['judgmentStatus'];record_status:JobDTO['recordStatus'];result_id:string|null;error_code:string|null;created_at:Date;}
@@ -21,6 +22,8 @@ const memoryKinds=['identity','philosophy','reflection','setting','foreshadowing
 let gmAdapter: (input:unknown)=>Promise<Receipt> = callGM;
 let tokenCounter:(input:unknown)=>Promise<number> = countGMInput;
 let backgroundObserver: ((promise:Promise<void>)=>void)|undefined;
+let queueDispatcher:(jobId:string)=>Promise<void>=dispatchQueuedJob;
+export function useQueueDispatcherForTest(dispatcher:(jobId:string)=>Promise<void>) {queueDispatcher=dispatcher;}
 export function useGMForTest(adapter:(input:unknown)=>Promise<Receipt>, observer:(promise:Promise<void>)=>void, counter:(input:unknown)=>Promise<number>=async()=>100) {gmAdapter=adapter;backgroundObserver=observer;tokenCounter=counter;}
 function ownerCheck(owner:string) { if(!process.env.OWNER_CLERK_USER_ID || owner!==process.env.OWNER_CLERK_USER_ID) throw new ServiceError('OWNER_REQUIRED',403); }
 function json(value:unknown) {return JSON.stringify(value);}
@@ -44,7 +47,7 @@ function jobDTO(job:Job,g:Game,all:Job[],results:Map<string,PlayerResult>):JobDT
   const unresolved=all.filter(j=>pendingStatuses.includes(j.status));
   const preceding=unresolved.find(j=>j.id!==job.id && (new Date(j.created_at).getTime()<new Date(job.created_at).getTime() || (new Date(j.created_at).getTime()===new Date(job.created_at).getTime() && j.id<job.id)));
   const result=job.result_id ? results.get(job.result_id) ?? null : null;
-  const nextAction:JobDTO['nextAction']=job.status==='running' ? 'poll' : job.status==='waiting' ? (preceding?'poll':'continue') : ['failed','interrupted','budget_blocked'].includes(job.status) ? 'retry' : result?.question ? 'answer' : 'none';
+  const nextAction:JobDTO['nextAction']=['running','waiting'].includes(job.status) ? 'poll' : ['failed','interrupted','budget_blocked'].includes(job.status) ? 'retry' : result?.question ? 'answer' : 'none';
   return {requestId:job.id,jobId:job.id,eventId:job.event_id,recordStatus:job.record_status,judgmentStatus:job.status,resultId:job.result_id,revision:g.revision,playerResult:result,nextAction,predecessorJobId:preceding?.id ?? null,unprocessedCount:unresolved.length,errorCode:job.error_code};
 }
 async function snapshotInTransaction(tx:SqlDB,g:Game):Promise<PlayerSnapshot> {
@@ -312,12 +315,35 @@ async function execute(c:Claimed):Promise<void> {
     await commitEnvelope(c,next);
   } catch(error) { await failAttempt(c,receipt,error); }
 }
+function observeBackground(promise:Promise<void>) {
+  if(backgroundObserver) backgroundObserver(promise); else after(()=>promise);
+}
+async function dispatchNextWaiting(owner:string):Promise<void> {
+  let jobId:string|null=null;
+  try {
+    jobId=await getDB().transaction(async tx=>{
+      const g=await gameLock(tx,owner);await maintenance(tx,g);
+      if(g.active_attempt) return null;
+      const first=(await rows<Job>(tx,"SELECT * FROM jobs WHERE owner=$1 AND status IN ('waiting','failed','interrupted','budget_blocked') ORDER BY created_at,id LIMIT 1",[owner]))[0];
+      return first?.status==='waiting'?first.id:null;
+    });
+    if(jobId) await queueDispatcher(jobId);
+  } catch {console.error(JSON.stringify({event:'queue_handoff_failed',jobId}));}
+}
+function executeAndContinue(c:Claimed) {
+  const promise=execute(c).then(()=>dispatchNextWaiting(c.game.owner));
+  observeBackground(promise);return promise;
+}
+export async function runQueuedJob(owner:string,jobId:string):Promise<boolean> {
+  ownerCheck(owner);
+  const c=await claim(owner,jobId,false);
+  if(!c) return false;
+  executeAndContinue(c);return true;
+}
 async function startJob(owner:string,jobId:string,retry:boolean):Promise<JobDTO> {
   const c=await claim(owner,jobId,retry);
-  if(!c) return readJob(owner,jobId);
-  const promise=execute(c);
-  // Exactly the same promise is observed; after() must not invoke execute() again.
-  if(backgroundObserver) backgroundObserver(promise); else after(()=>promise);
+  if(!c) {observeBackground(dispatchNextWaiting(owner));return readJob(owner,jobId);}
+  const promise=executeAndContinue(c);
   let timer:ReturnType<typeof setTimeout>|undefined;
   await Promise.race([promise,new Promise<void>(resolve=>{timer=setTimeout(resolve,8000);})]);
   if(timer) clearTimeout(timer);
