@@ -155,3 +155,50 @@ test('Neon DB boundary: deletion preserves numeric abilities, public item quanti
     const items=state.entities.filter(e=>e.kind==='item');assert.deepEqual(items.map(e=>e.quantity),[5,null]);assert.ok(items.every(e=>e.status===null&&e.relatedIds.length===0&&e.attributes?.length===0));assert.ok(!JSON.stringify(state).includes('DELETE_SENTINEL'));assert.ok(state.abilities.every(a=>a.id!=='DELETE_SENTINEL_ABILITY'));
   } finally {process.env.OWNER_CLERK_USER_ID=owner;nextEnvelope=envelope;}
 });
+
+test('Neon DB boundary: legacy memory references resolve and new memory IDs stay canonical across turns',async()=>{
+  const memoryOwner=`memory_${randomUUID()}`,legacyId=randomUUID();process.env.OWNER_CLERK_USER_ID=memoryOwner;
+  const memory=(id:string,previousId:string|null)=>({id,kind:'setting' as const,content:'SYNTHETIC_MEMORY',reason:'synthetic revision',previousId,important:true,relatedIds:[]});
+  try {
+    await testDB.transaction(async tx=>{
+      await rows(tx,'INSERT INTO games(owner,started_at) VALUES($1,now())',[memoryOwner]);
+      await rows(tx,"INSERT INTO records(id,owner,kind,payload,important) VALUES($1,$2,'setting',$3::jsonb,true)",[legacyId,memoryOwner,JSON.stringify(memory('legacy-local-id',null))]);
+    });
+    let inputRecords:any[]=[];
+    useGMForTest(async input=>{calls++;inputRecords=(input as any).records;return receipt();},observe);
+    nextEnvelope={...envelope,memories:[memory('new-local-id','legacy-local-id')]};
+    const first=await submitCommand(memoryOwner,cmd('force_record',0));
+    assert.equal(first.judgmentStatus,'committed');
+    assert.equal(inputRecords.find(r=>r.id===legacyId)?.content.id,legacyId);
+    const stored=(await testDB.transaction(tx=>rows<any>(tx,"SELECT * FROM records WHERE owner=$1 AND kind='setting' AND id<>$2",[memoryOwner,legacyId])))[0];
+    assert.equal(stored.payload.id,stored.id);assert.equal(stored.payload.previousId,legacyId);
+    nextEnvelope={...envelope,memories:[memory('batch-first',stored.id),memory('batch-second','batch-first')]};
+    const second=await submitCommand(memoryOwner,cmd('force_record',(await readPlayer(memoryOwner)).revision));
+    assert.equal(second.judgmentStatus,'committed');
+    const chain=await testDB.transaction(tx=>rows<any>(tx,"SELECT id,payload FROM records WHERE owner=$1 AND kind='setting'",[memoryOwner]));
+    const newer=chain.find(r=>r.payload.previousId===stored.id),latest=chain.find(r=>r.payload.previousId===newer?.id);
+    assert.ok(newer);assert.ok(latest);assert.equal(newer.payload.id,newer.id);assert.equal(latest.payload.id,latest.id);
+    assert.equal(inputRecords.find(r=>r.id===stored.id)?.content.id,stored.id);
+  } finally {process.env.OWNER_CLERK_USER_ID=owner;nextEnvelope=envelope;useGMForTest(syntheticAdapter,observe);}
+});
+
+test('Neon DB boundary: missing, foreign, deleted and ambiguous memory aliases cannot be applied',async()=>{
+  const memoryOwner=`memory_guard_${randomUUID()}`,foreignOwner=`foreign_${randomUUID()}`;process.env.OWNER_CLERK_USER_ID=memoryOwner;
+  const memory=(id:string,previousId:string|null)=>({id,kind:'setting' as const,content:'SYNTHETIC_MEMORY',reason:'synthetic revision',previousId,important:true,relatedIds:[]});
+  try {
+    await testDB.transaction(async tx=>{
+      for(const id of [memoryOwner,foreignOwner])await rows(tx,'INSERT INTO games(owner,started_at) VALUES($1,now())',[id]);
+      for(const [recordOwner,alias,deleted] of [[foreignOwner,'foreign-alias',false],[memoryOwner,'deleted-alias',true],[memoryOwner,'ambiguous-alias',false],[memoryOwner,'ambiguous-alias',false]] as const) {
+        await rows(tx,"INSERT INTO records(id,owner,kind,payload,deleted) VALUES($1,$2,'setting',$3::jsonb,$4)",[randomUUID(),recordOwner,JSON.stringify(memory(alias,null)),deleted]);
+      }
+    });
+    for(const reference of ['missing-alias','foreign-alias','deleted-alias','ambiguous-alias']) {
+      const revision=(await readPlayer(memoryOwner)).revision;
+      nextEnvelope={...envelope,memories:[memory('new-memory',reference)]};
+      const result=await submitCommand(memoryOwner,cmd('force_record',revision));
+      assert.equal(result.judgmentStatus,'failed');assert.equal(result.errorCode,reference==='ambiguous-alias'?'MEMORY_PREDECESSOR_AMBIGUOUS':'MEMORY_PREDECESSOR_MISSING');
+      assert.equal(result.recordStatus,'recorded');assert.equal(result.resultId,null);assert.equal((await readPlayer(memoryOwner)).revision,revision);
+      await deleteEvent(memoryOwner,result.eventId!);
+    }
+  } finally {process.env.OWNER_CLERK_USER_ID=owner;nextEnvelope=envelope;useGMForTest(syntheticAdapter,observe);}
+});

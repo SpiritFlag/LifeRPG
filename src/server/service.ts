@@ -17,6 +17,7 @@ export function privacySafeState(state:GameState,preserveCharacter:boolean):Game
   return {level:state.level,totalXp:state.totalXp,abilities:state.abilities.map((ability,index)=>({id:randomUUID(),name:`무명의 힘 ${index+1}`,value:ability.value,meaning:'아직 이름을 얻지 않은 가능성',changeReason:null})),entities:[...character,...items]};
 }
 const pendingStatuses=['waiting','running','failed','interrupted','budget_blocked'];
+const memoryKinds=['identity','philosophy','reflection','setting','foreshadowing','rationale'];
 let gmAdapter: (input:unknown)=>Promise<Receipt> = callGM;
 let tokenCounter:(input:unknown)=>Promise<number> = countGMInput;
 let backgroundObserver: ((promise:Promise<void>)=>void)|undefined;
@@ -148,7 +149,7 @@ async function claim(owner:string,jobId:string,retry:boolean):Promise<Claimed|nu
       ORDER BY created_at DESC,id LIMIT 40`,[owner,j.event_id,j.command.targetId ?? '',`%${j.command.text.slice(0,32).replace(/[%_\\]/g,'')}%`]);
     const anchors=await rows<RecordRow>(tx,'SELECT * FROM records WHERE owner=$1 AND id IN ($2,$3) AND deleted=false',[owner,j.event_id,j.command.targetId ?? '']);
     const context=[...new Map([...required,...selected,...anchors].map(r=>[r.id,r])).values()];
-    const input={contractVersion:'liferpg.1',promptVersion:PROMPT_VERSION,today:new Date().toISOString().slice(0,10),startedAt:g.started_at,state:g.state,command:j.command,eventId:j.event_id,records:context.map(r=>({id:r.id,version:r.version,kind:r.kind,content:r.payload}))};
+    const input={contractVersion:'liferpg.1',promptVersion:PROMPT_VERSION,today:new Date().toISOString().slice(0,10),startedAt:g.started_at,state:g.state,command:j.command,eventId:j.event_id,records:context.map(r=>({id:r.id,version:r.version,kind:r.kind,content:memoryKinds.includes(r.kind)&&typeof r.payload?.id==='string'?{...r.payload,id:r.id}:r.payload}))};
     if(inputUpperBound(input)>MAX_INPUT_BYTES) {
       await rows(tx,"UPDATE jobs SET status='failed',error_code='GM_INPUT_LIMIT' WHERE id=$1",[j.id]);return null;
     }
@@ -240,9 +241,23 @@ async function commitEnvelope(c:Claimed,next:GMEnvelope) {
     const result:PlayerResult={id:resultId,title:next.title,scene:next.scene,changes:next.changes,question:next.question,createdAt:new Date().toISOString(),revision};
     await addRecord(tx,g.owner,'result',result,a.sources,false,resultId);
     await addRecord(tx,g.owner,'rationale',{content:next.rationale,jobId:job.id},a.sources);
+    const writtenMemoryIds=new Map<string,string>();
     for(const memory of next.memories) {
-      if(memory.previousId && !(await rows<RecordRow>(tx,'SELECT id FROM records WHERE id=$1 AND owner=$2 AND deleted=false',[memory.previousId,g.owner])).length) throw new ServiceError('MEMORY_PREDECESSOR_MISSING',422);
-      await addRecord(tx,g.owner,memory.kind,memory,a.sources,memory.important||['identity','philosophy','foreshadowing'].includes(memory.kind));
+      if(writtenMemoryIds.has(memory.id)) throw new ServiceError('DUPLICATE_MEMORY_ID',422);
+      let previousId=memory.previousId ? writtenMemoryIds.get(memory.previousId) ?? memory.previousId : null;
+      if(previousId) {
+        const exact=await rows<RecordRow>(tx,'SELECT id FROM records WHERE id=$1 AND owner=$2 AND deleted=false AND payload IS NOT NULL AND kind=ANY($3::text[])',[previousId,g.owner,memoryKinds]);
+        if(!exact.length) {
+          // Older rows retained a model-local payload.id alongside the DB UUID.
+          // Resolve only one live, same-owner memory; never guess between aliases.
+          const legacy=await rows<RecordRow>(tx,"SELECT id FROM records WHERE payload->>'id'=$1 AND owner=$2 AND deleted=false AND payload IS NOT NULL AND kind=ANY($3::text[]) LIMIT 2",[previousId,g.owner,memoryKinds]);
+          if(legacy.length!==1) throw new ServiceError(legacy.length?'MEMORY_PREDECESSOR_AMBIGUOUS':'MEMORY_PREDECESSOR_MISSING',422);
+          previousId=legacy[0].id;
+        }
+      }
+      const memoryId=randomUUID();
+      await addRecord(tx,g.owner,memory.kind,{...memory,id:memoryId,previousId},a.sources,memory.important||['identity','philosophy','foreshadowing'].includes(memory.kind),memoryId);
+      writtenMemoryIds.set(memory.id,memoryId);
     }
     const state:GameState=next.decision==='apply'?{level:next.level,totalXp:next.totalXp,abilities:next.abilities,entities:next.entities}:g.state;
     await addRecord(tx,g.owner,'state_change',{revision,jobId:job.id,before:g.state,after:state},a.sources);
