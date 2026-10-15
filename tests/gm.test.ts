@@ -33,5 +33,3 @@ test('failed response encryption and hard 24h access expiry',()=>{
   assert.equal(decryptDiagnostic(encrypted,new Date(Date.now()+1000)),'sensitive failed body');
   assert.throws(()=>decryptDiagnostic(encrypted,new Date(Date.now()-1)),/DIAGNOSTIC_EXPIRED/);
 });
-
-

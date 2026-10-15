@@ -127,5 +127,16 @@ test('Neon DB boundary: declined fact and derivatives are purged, explicit force
   await deleteEvent(owner,result.eventId!);
   assert.ok(!(await readPlayer(owner)).events.some(e=>e.id===forced.eventId));
 });
-
-
+test('Neon DB boundary: correction projects newest record status and deletes old facts',async()=>{
+  const correctionOwner=`correction_${randomUUID()}`;process.env.OWNER_CLERK_USER_ID=correctionOwner;
+  try {
+    await testDB.transaction(tx=>rows(tx,'INSERT INTO games(owner,started_at) VALUES($1,now())',[correctionOwner]));
+    const original=await submitCommand(correctionOwner,cmd('force_record',0,{text:'SYNTHETIC_OLD_FACT'}));
+    const correction=await submitCommand(correctionOwner,cmd('correct',(await readPlayer(correctionOwner)).revision,{targetId:original.eventId,text:'SYNTHETIC_CORRECTED_FACT'}));
+    const snapshot=await readPlayer(correctionOwner),event=snapshot.events.find(e=>e.id===original.eventId);
+    assert.equal(correction.recordStatus,'recorded');assert.equal(event?.recordStatus,'recorded');assert.equal(event?.text,'SYNTHETIC_CORRECTED_FACT');assert.equal(event?.version,2);
+    const persisted=await testDB.transaction(tx=>rows<{payload:unknown;command:unknown;fingerprint:unknown}>(tx,'SELECT payload,NULL AS command,NULL AS fingerprint FROM records WHERE owner=$1 UNION ALL SELECT NULL AS payload,command,fingerprint FROM jobs WHERE owner=$1',[correctionOwner]));
+    assert.ok(!JSON.stringify(persisted).includes('SYNTHETIC_OLD_FACT'));
+    await deleteEvent(correctionOwner,original.eventId!);assert.equal((await readPlayer(correctionOwner)).events.length,0);
+  } finally {process.env.OWNER_CLERK_USER_ID=owner;}
+});

@@ -93,4 +93,3 @@ export function validateMeaning(next: GMEnvelope, old: GameState, command: Comma
   }
   if(next.decision!=='apply' && !isDeepStrictEqual({level:next.level,totalXp:next.totalXp,abilities:next.abilities,entities:next.entities},old)) throw new ServiceError('NON_APPLY_STATE_CHANGE',422);
 }
-
