@@ -31,7 +31,7 @@ npm run dev
 
 DB 테이블은 `games`(현재 상태·revision·개인정보 epoch·활성 실행), `records`(현실/퀘스트/공개 결과/GM 기억/상태 이력), `jobs`(접수와 판정 상태), `attempts`(호출·진단·예산 예약), `budgets`(월별 및 실험 누계)다. 마이그레이션은 `migrations/`에서 관리한다.
 
-현실 사건 입력은 `start`, `experience`, `force_record`, `correct`, `quest`, `quest_update`, `answer`, `appeal`을 지원한다. 모든 명령에 `requestKey`, `expectedRevision`, 사실 내용·시각·불확실성·선택 대상·퀘스트 동의가 들어간다. 같은 요청 키 재전송은 저장된 결과를 반환하며 다른 내용으로 재사용하면 충돌한다. 삭제·거부된 요청의 재전송도 내용을 부활시키지 않는다. 정확히 같은 내용과 발생 시각의 경험 후보는 확인을 요구한다. 자연어로 다르게 표현한 사건의 동일성 판단은 버디가 기존 사건을 조회하고 처리해야 한다.
+현실 사건 입력은 `start`, `experience`, `force_record`, `correct`, `quest`, `quest_update`, `answer`, `appeal`을 지원한다. 모든 명령에 `requestKey`, `expectedRevision`, 사실 내용·시각·불확실성·선택 대상·퀘스트 동의가 들어간다. `requestKey`는 삭제 후 중복 방지에 남으므로 일반 명령은 현실 내용을 포함하지 않는 UUID를 사용한다. 같은 요청 키 재전송은 저장된 결과를 반환하며 다른 내용으로 재사용하면 충돌한다. 삭제·거부된 요청의 재전송도 내용을 부활시키지 않는다. 정확히 같은 내용과 발생 시각의 경험 후보는 확인을 요구한다. 자연어로 다르게 표현한 사건의 동일성 판단은 버디가 기존 사건을 조회하고 처리해야 한다.
 
 현실 퀘스트는 과업·완료 조건·동의 맥락·반복 조건을 보존한다. 판타지 quest entity의 `realTaskId`가 동의된 현실 과업을 연결하며, 완료 전환에는 실제 경험 사건의 근거가 필요하다. 클릭·등록·독려만으로 완료되지 않고 같은 근거의 중복 완료를 차단한다. 순수 판타지 퀘스트는 `realTaskId: null`이다.
 
@@ -91,7 +91,9 @@ GM은 공식 OpenAI Responses API의 `gpt-6.1-sol`, reasoning `medium`, tier `de
 | 검증 | 실제 확인한 범위 |
 | --- | --- |
 | 실제 Sol → Neon | `exp-20261015-birth-01`: 합성 principal로 실제 Sol HTTP 200·completed, 계약 검증, 레벨 1·XP 0·revision 1 저장 및 재조회. 약 33초. Clerk/MCP HTTP를 통과한 실험은 아니다. |
-| 비용 증거 | 위 실험 usage input 1,093 / output 1,349, 보수적 누적 $0.018409, 예약 잔액 0. 실제 공급자 청구 확정값과 구분. |
+| 실제 OAuth → 로컬 MCP → Sol → Neon → 웹 | `exp-20261015-mcp-02`: 별도 합성 시험사용자의 실제 OTP·동의·PKCE OAuth로 HTTP MCP 시작 요청. 처음 `running` 반환 후 단일 실제 Sol 응답을 검증·저장하고 MCP와 웹 세션 조회의 동일 result/revision 1을 확인. 레벨 1·XP 0·세계 순서 1, 약 33초. 실제 ChatGPT host 및 배포 환경 증거와 구분. |
+| 실제 OAuth → Vercel MCP → Sol → Neon → 웹 | `exp-20261015-vercel-03`: 별도 합성 시험사용자와 보호된 임시 Git preview에서 실제 전체 경로 성공. 초기 `running` 응답 10:27:48.548 UTC 이후 실제 응답 수신 10:28:02.017, 저장 10:28:02.079로 배포된 `after()` 지속 실행을 확인. attempt 1, 자동 재시도 없음, MCP/웹 동일 result·revision 1, 레벨 1·XP 0. 실제 ChatGPT host에서 호출한 것은 아니다. |
+| 비용 증거 | 세 실험 input/output은 각각 1,093/1,349, 1,198/1,203, 1,196/1,113. 보수적 비용 $0.018409/$0.017421/$0.016512, 팀 전체 누적 $0.052342, 예약 잔액 0. 실제 공급자 청구 확정값과 구분. |
 | 실제 token-count API | 883 tokens 반환 확인. 모델 추론 성공 실험과 별도. |
 | 실제 Clerk/OAuth와 로컬 HTTP | 새 개발 인스턴스의 합성 시험사용자로 이메일 OTP·동의·PKCE S256을 거쳐 실제 scoped OAuth token 발급. 공식 SDK와 실제 인증 모듈의 audience/owner/client/scope·변조 검증, 로컬 HTTP MCP 읽기 200와 Neon 미시작 상태, 별도 웹 세션 조회 200, OAuth→웹 및 웹 세션→MCP 교차 사용 401을 확인. Naver 실사용자 OTP와 ChatGPT 연결은 별도 검증 대상. |
 | 합성 실패·실제 DB | 잘못된 형식·refusal·incomplete, 중복·동시성·FIFO·이어 처리, lease 만료, 늦은 응답, 강제 기록·정정·삭제, 비공개 투영, 현실 퀘스트 완료근거, 월/누적 cap, 과금 불명 예약, 진단 만료를 격리 Neon에서 검증. 모델 응답은 주입한 것이다. |
@@ -99,7 +101,7 @@ GM은 공식 OpenAI Responses API의 `gpt-6.1-sol`, reasoning `medium`, tier `de
 
 실토큰 검증에서 Clerk의 BAPI 반환값에 `type`이 생략되는 것을 확인했다. 전용 OAuth verifier가 검증한 결과에서만 생략을 허용하고, 명시적으로 다른 type이 있거나 audience·만료·소유자·client·scope가 맞지 않으면 거부한다. 모의 응답과 실제 응답 형식의 차이를 수정한 사례다. 독립 검수는 이 변경과 기존 P1/P2, 삭제 후 수치 보존·늦은 응답·다음 입력의 삭제 정보 부재를 재확인했고 미해결 중대 결함을 보고하지 않았다.
 
-실제 OAuth scoped token → MCP → Sol → 저장 → 웹 재조회, 배포된 `after()`의 완료, 사용자 ChatGPT 연결·프로젝트·모바일 제공 여부와 자연스러운 버디 사용감은 연결 검증 진행 중이다. 최종 인수 전에 이 표를 실제 결과로 갱신한다. 내부 세부 증거는 비공개 `.local/` 아래에 두며 공개 저장소에 올리지 않는다.
+실제 OAuth scoped token → MCP → Sol → 저장 → 웹 재조회는 로컬과 Vercel preview 모두 확인했다. 원격 실험의 정확한 소스는 `871593e`와 같은 tree인 시험 트리거 커밋 `d53e806`이며, 이후 requestKey 형식 제한·도구 설명 수정에는 단위·실제 Neon 회귀·빌드 검증을 적용했다. 선택된 실사용자의 브라우저 로그인, 실제 ChatGPT client 연결·동의·카드·프로젝트·모바일 제공 여부와 자연스러운 버디 사용감은 별도 인수 대상이다. 내부 세부 증거는 비공개 `.local/` 아래에 두며 공개 저장소에 올리지 않는다.
 
 사용자의 최신 배포 선택은 GitHub 연동이며 `develop` 검증·`main` 운영을 기본으로 한다. 사용자는 기존 공개 `SpiritFlag/LifeRPG` 저장소에 비밀값·개인정보·내부 로그·사용자 `.agents/`를 제외한 구현 코드와 승인 문서의 푸시를 명시적으로 승인했다. 새 Vercel 프로젝트를 해당 GitHub 저장소에 연결하고 `productionBranch=main`, `autoAssignCustomDomains=false`를 API로 확인했다.
 
@@ -107,6 +109,12 @@ GM은 공식 OpenAI Responses API의 `gpt-6.1-sol`, reasoning `medium`, tier `de
 
 원청의 구체 승인에 따라 공통 설계 커밋 `66967f2`에서 `main`을 만들고 `f6055a3`의 정적 준비 페이지 두 파일만 추가해 Git으로 배포했다. `dpl_GZ3FoLgy6mdxRoAaH3CdmkFKJtB6`는 Git/main/production/READY이고 애플리케이션 키·DB·소유자 환경변수는 없다. CLI 인증으로 준비 페이지 본문을 확인했으며 Vercel 보호와 도메인 자동할당 해제는 유지한다. 자동 생성된 Vercel 별칭은 있지만 목표 도메인을 연결하지 않았다. bootstrap은 실제 LifeRPG 운영 승격이 아니다.
 
-`main`의 `public/index.html`과 정적 `vercel.json`은 최종 앱 승격 때 제거해야 한다. 공통 조상에서 분기했으므로 이 두 파일을 정리한 정상 `develop`→`main` 병합으로 전달할 수 있다. 프로젝트 기본 framework는 bootstrap 뒤 `nextjs`로 복원했고 실제 develop preview는 별도 확인한다.
+`main`의 `public/index.html`과 정적 `vercel.json`은 최종 앱 승격 때 제거해야 한다. 공통 조상에서 분기했으므로 이 두 파일을 정리한 정상 `develop`→`main` 병합으로 전달할 수 있다. 프로젝트 기본 framework는 bootstrap 뒤 `nextjs`로 복원했다.
+
+첫 실제 `develop` Git 배포 `8ec0c33` / `dpl_HjDSB4bS6fXXsPXNJ5MU68fxjXtQ`는 READY이며 OIDC 환경은 preview다. 검증 주소는 `https://liferpg-git-develop-jeong-sin-gis-projects.vercel.app`이다. 이 별칭에만 Vercel 보호 예외를 적용하여 로그인 화면과 OAuth metadata를 외부 클라이언트가 열 수 있게 했고 main과 다른 배포의 보호는 유지했다. 인증 없는 `/api/player`는 401·private/no-store, `/sign-in`과 명확한 합성 `/demo`는 200이다. preview의 유료 호출은 꺼져 있다.
+
+새 LifeRPG 개발 Clerk의 관리 UI에서 공식 `https://chatgpt.com/oauth/client.json`을 CIMD로 사전등록하고 `life:read`, `life:write`, `life:delete`, `offline_access`를 부여했다. ChatGPT 이름·로고 해석, metadata refresh 후 오류 없는 등록 행을 실제 확인했다. 로컬 및 preview의 `MCP_ALLOWED_CLIENT_IDS`에는 이 공식 URL 하나만 설정했다. 환경변수 변경은 후속 Git 빌드부터 적용된다. 실제 ChatGPT의 token endpoint 인증방식 협상·사용자 동의는 이 등록 확인으로 대체하지 않는다. 공통 SpiritFlag 앱이나 Google 로그인 설정은 사용자 작업이며 이 구현에서 변경하지 않았다.
+
+원격 실험에는 별도 `integration-check` branch의 합성 owner/client와 실행별 승인만 사용했다. 성공 후 해당 branch의 6개 환경변수 override, 시험 배포 2개, 임시 원격 branch, 자동화 우회 credential과 환경변수의 로컬 복사본을 제거했다. 시험 브라우저 세션도 폐기했으며 원본 비용·실행 증거는 비공개로 보존했다. 실사용자의 첫 탄생은 수행하지 않았다.
 
 최종 운영 배포는 신규 서비스의 실제 검증, 생산용 인증·DB·예산·도메인 설정과 되돌릴 배포를 확인한 뒤 원청의 마지막 전환 판단에 따른다. 레거시 배포·Clerk·DB·DNS는 변경하지 않았다.
