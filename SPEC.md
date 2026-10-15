@@ -86,6 +86,8 @@ GM은 공식 OpenAI Responses API의 `gpt-6.1-sol`, reasoning `medium`, tier `de
 
 ## 환경과 검증 상태
 
+MCP 인증 거부는 서버 런타임 로그에 `mcp_auth_rejected`로 기록한다. Bearer 헤더, Clerk 검증, 토큰 claims, owner/client 정책 중 실패 단계와 고정된 사유 코드, 응답 HTTP 상태를 구분한다. Clerk 검증 실패는 숫자 상태와 허용 목록의 오류 코드만 추가하며 토큰·키·사용자 식별자·claims 값·공급자 원문/stack은 기록하지 않는다. 검증 조건과 외부 오류 응답은 유지한다. 실제 ChatGPT 연결 실패 원인은 이 진단 배포 후 재현으로 확인해야 한다.
+
 새 개발 자원은 레거시와 분리했다. Neon `small-cherry-34193327` / develop branch `br-wild-bird-b3rbqb4s` / `liferpg` DB, Clerk `app_3Kj2IFc8VK7Ts3hCOR6CHrnWwUw` 개발 인스턴스, Vercel `prj_PV5JTHOVjv8ZWb02pIszbNHNEzUq`의 `liferpg` 프로젝트를 사용한다. Neon 무료 플랜과 기존 Vercel 계정을 재사용했으며 새 유료 구독은 만들지 않았다. 운영 Clerk/DB/도메인 전환은 아직 수행하지 않았다.
 
 | 검증 | 실제 확인한 범위 |

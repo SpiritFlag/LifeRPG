@@ -69,6 +69,31 @@ export async function requireWebOwner(request?: Request): Promise<string> {
 
 export interface McpPrincipal { ownerId: string; clientId: string; scopes: string[]; }
 
+// Only fixed labels and numeric HTTP statuses reach logs. Never serialize a Clerk
+// error: its message, stack or response may contain credentials or token claims.
+function rejectMcp(stage: string, reason: string, status: 401 | 403 | 503, message: string,
+  provider: { status?: number; code?: string } = {}): never {
+  console.warn(JSON.stringify({ event: 'mcp_auth_rejected', stage, reason, status, providerStatus: provider.status, providerCode: provider.code }));
+  throw new AuthorizationError(status, message);
+}
+
+function verificationDiagnostic(error: unknown): { status?: number; code: string } {
+  const value = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+  const status = typeof value.status === 'number' && Number.isInteger(value.status) && value.status >= 400 && value.status <= 599
+    ? value.status : undefined;
+  const message = typeof value.message === 'string' ? value.message : '';
+  // Recognize SDK audience failures without copying the actual audience values.
+  if (message.startsWith('Invalid OAuth audience claim (aud)')) return { status, code: 'oauth_audience_missing_or_invalid' };
+  if (message.startsWith('OAuth audience mismatch.')) return { status, code: 'oauth_audience_mismatch' };
+  const allowed = new Set(['token-expired', 'token-invalid', 'token-invalid-signature', 'token-verification-failed',
+    'secret-key-invalid', 'jwk-remote-failed-to-load', 'jwk-kid-mismatch', 'oauth_access_token_not_found',
+    'invalid_api_key', 'authentication_invalid', 'resource_not_found']);
+  const first = Array.isArray(value.errors) ? value.errors[0] : undefined;
+  const candidate = typeof value.reason === 'string' ? value.reason
+    : first && typeof first === 'object' && typeof first.code === 'string' ? first.code : undefined;
+  return { status, code: candidate && allowed.has(candidate) ? candidate : 'unclassified_verification_error' };
+}
+
 export async function authenticateMcp(request: Request): Promise<McpPrincipal> {
   requireClerkConfiguration();
   const owner = ownerId();
@@ -77,27 +102,30 @@ export async function authenticateMcp(request: Request): Promise<McpPrincipal> {
   const clients = process.env.MCP_ALLOWED_CLIENT_IDS?.split(',').map(x => x.trim()).filter(Boolean) ?? [];
   if (!clients.length) throw new AuthorizationError(503, 'OAuth clients are not configured');
   const match = /^Bearer ([^\s,]+)$/i.exec(request.headers.get('authorization') ?? '');
-  if (!match) throw new AuthorizationError(401, 'OAuth bearer token required');
+  if (!match) rejectMcp('authorization_header', 'missing_or_malformed_bearer', 401, 'OAuth bearer token required');
   let token;
   try {
     // Official Clerk verification supports opaque and JWT access tokens. Never decode
     // an unverified JWT or accept a web session as MCP authorization.
     token = await (await clerkClient()).idPOAuthAccessToken.verify(match[1], { audience: resource });
-  } catch {
-    throw new AuthorizationError(401, 'Invalid OAuth access token');
+  } catch (error) {
+    rejectMcp('clerk_verification', 'verification_failed', 401, 'Invalid OAuth access token', verificationDiagnostic(error));
   }
   // BAPI expiration is seconds; some SDK JWT paths normalize it to milliseconds.
   const expirationMs = typeof token.expiration === 'number'
     ? token.expiration < 1e12 ? token.expiration * 1000 : token.expiration : 0;
   // The dedicated OAuth verifier rejects web sessions. Its BAPI resource can
   // omit `type` (the published verify response does); JWT-normalized paths set it.
-  if (token.revoked || token.expired || (token.type !== undefined && token.type !== 'oauth_token') ||
-      !Number.isFinite(expirationMs) || expirationMs <= Date.now() ||
-      !Array.isArray(token.aud) || !token.aud.includes(resource) ||
-      !Array.isArray(token.scopes) || !token.scopes.every(scope => typeof scope === 'string')) {
-    throw new AuthorizationError(401, 'Invalid or unbound OAuth access token');
+  const invalidClaim = token.revoked ? 'revoked' : token.expired ? 'expired'
+    : token.type !== undefined && token.type !== 'oauth_token' ? 'wrong_token_type'
+    : !Number.isFinite(expirationMs) || expirationMs <= Date.now() ? 'expiration_invalid_or_elapsed'
+    : !Array.isArray(token.aud) ? 'audience_not_array' : !token.aud.includes(resource) ? 'audience_mismatch'
+    : !Array.isArray(token.scopes) || !token.scopes.every(scope => typeof scope === 'string') ? 'scopes_malformed' : null;
+  if (invalidClaim) {
+    rejectMcp('token_claims', invalidClaim, 401, 'Invalid or unbound OAuth access token');
   }
-  if (token.subject !== owner || !clients.includes(token.clientId)) throw new AuthorizationError(403, 'OAuth access denied');
+  if (token.subject !== owner) rejectMcp('access_policy', 'owner_mismatch', 403, 'OAuth access denied');
+  if (!clients.includes(token.clientId)) rejectMcp('access_policy', 'client_not_allowed', 403, 'OAuth access denied');
   return { ownerId: owner, clientId: token.clientId, scopes: token.scopes };
 }
 

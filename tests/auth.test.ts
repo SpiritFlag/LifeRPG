@@ -8,13 +8,14 @@ const originalLoad = (Module as any)._load;
 let session: any;
 let token: any;
 let verificationError = false;
+let providerError: unknown;
 let verified: any[] = [];
 let middlewareCalls = 0;
 const sdk = {
   auth: async (options: unknown) => { assert.deepEqual(options, { acceptsToken: 'session_token' }); return session; },
   clerkClient: async () => ({ idPOAuthAccessToken: { verify: async (...args: unknown[]) => {
     verified.push(args);
-    if (verificationError) throw new Error('invalid token');
+    if (verificationError) throw providerError;
     return token;
   } } }),
   clerkMiddleware: () => { middlewareCalls++; return () => new Response(null, { status: 200 }); },
@@ -39,7 +40,7 @@ beforeEach(() => {
   session = { userId: 'user_owner' };
   // Real BAPI OAuth verification omits type; the dedicated verifier establishes it.
   token = { subject: 'user_owner', clientId: 'client_allowed', scopes: ['life:read'], aud: ['http://localhost:3000/mcp'], expiration: Math.floor(Date.now() / 1000) + 600, revoked: false, expired: false };
-  verified = []; verificationError = false; middlewareCalls = 0;
+  verified = []; verificationError = false; providerError = new Error('invalid token'); middlewareCalls = 0;
 });
 const bearer = (value = 'real-looking-opaque-token') => new Request('http://localhost:3000/mcp', { headers: { authorization: `Bearer ${value}` } });
 const rejects = (operation: () => Promise<unknown>, status: number) => assert.rejects(operation, (error: any) => error instanceof auth.AuthorizationError && error.status === status);
@@ -76,6 +77,38 @@ test('MCP rejects revoked, expired, session, unbound and malformed OAuth tokens'
   for (const patch of [{ subject: 'another-user' }, { clientId: 'unapproved-client' }]) {
     token = { ...valid, ...patch }; await rejects(() => auth.authenticateMcp(bearer()), 403);
   }
+});
+test('MCP diagnostics identify rejection stages without leaking credentials, claims or provider payloads', async () => {
+  const logs: string[] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => { logs.push(args.join(' ')); };
+  try {
+    const secret = 'private-credential-and-personal-claim';
+    verificationError = true;
+    providerError = Object.assign(new Error(`OAuth audience mismatch. ${secret}`), {
+      status: 422, errors: [{ code: secret, message: secret }], data: { token: secret },
+    });
+    await rejects(() => auth.authenticateMcp(bearer(secret)), 401);
+    assert.deepEqual(JSON.parse(logs.pop()!), { event: 'mcp_auth_rejected', stage: 'clerk_verification',
+      reason: 'verification_failed', status: 401, providerStatus: 422, providerCode: 'oauth_audience_mismatch' });
+    providerError = { status: 401, errors: [{ code: 'invalid_api_key', message: secret }] };
+    await rejects(() => auth.authenticateMcp(bearer(secret)), 401);
+    assert.equal(JSON.parse(logs.pop()!).providerCode, 'invalid_api_key');
+    providerError = { status: secret, reason: secret, errors: [{ code: secret }], message: secret };
+    await rejects(() => auth.authenticateMcp(bearer(secret)), 401);
+    assert.deepEqual(JSON.parse(logs.at(-1)!), { event: 'mcp_auth_rejected', stage: 'clerk_verification',
+      reason: 'verification_failed', status: 401, providerCode: 'unclassified_verification_error' });
+    verificationError = false;
+    token.expiration = null;
+    await rejects(() => auth.authenticateMcp(bearer(secret)), 401);
+    assert.equal(JSON.parse(logs.at(-1)!).reason, 'expiration_invalid_or_elapsed');
+    token.expiration = Date.now() + 600000; token.subject = secret;
+    await rejects(() => auth.authenticateMcp(bearer(secret)), 403);
+    assert.equal(JSON.parse(logs.at(-1)!).reason, 'owner_mismatch');
+    await rejects(() => auth.authenticateMcp(new Request('http://localhost:3000/mcp')), 401);
+    assert.equal(JSON.parse(logs.at(-1)!).stage, 'authorization_header');
+    assert.ok(logs.every(line => !line.includes(secret)));
+  } finally { console.warn = warn; }
 });
 test('missing auth configuration fails closed before calling Clerk', async () => {
   for (const key of ['CLERK_SECRET_KEY', 'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY', 'OWNER_CLERK_USER_ID']) {
