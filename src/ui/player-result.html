@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>LifeRPG · 이어지는 이야기</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font:
+          14px/1.8 Arial,
+          "Malgun Gothic",
+          sans-serif;
+        color: #e1e6df;
+        background: #10232a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        overflow-wrap: anywhere;
+      }
+      header {
+        color: #ddc38a;
+        font-size: 10px;
+        letter-spacing: 3px;
+        border-bottom: 1px solid #46524a;
+        padding-bottom: 15px;
+      }
+      h1 {
+        font:
+          27px/1.5 Georgia,
+          "Batang",
+          serif;
+        margin: 22px 0 16px;
+        color: #ede3c4;
+      }
+      #scene,
+      #detail {
+        white-space: pre-wrap;
+        font:
+          16px/2.1 Georgia,
+          "Batang",
+          serif;
+        color: #cfdbd6;
+      }
+      #scene {
+        margin-bottom: 15px;
+      }
+      #status {
+        color: #c9c6a4;
+        font-size: 12px;
+      }
+      ul {
+        list-style: none;
+        padding: 12px 0 0;
+        border-top: 1px solid #46524a;
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      li {
+        color: #ddc38a;
+        background: #bba6590c;
+        border: 1px solid #5c6047;
+        padding: 5px 10px;
+        font-size: 12px;
+      }
+      details {
+        border-top: 1px solid #46524a;
+        padding-top: 12px;
+        margin: 20px 0;
+      }
+      summary {
+        cursor: pointer;
+        color: #ddc38a;
+      }
+      button,
+      a {
+        font: inherit;
+        font-size: 12px;
+        border: 1px solid #77714f;
+        background: transparent;
+        color: #ddc38a;
+        padding: 8px 14px;
+        border-radius: 3px;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      button:focus-visible,
+      a:focus-visible,
+      summary:focus-visible {
+        outline: 2px solid #eacf8c;
+        outline-offset: 4px;
+      }
+      .actions {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      small {
+        display: block;
+        color: #9eb3b0;
+        margin-top: 15px;
+      }
+      #question {
+        padding: 12px;
+        border: 1px solid #77714f;
+      }
+      #question:empty {
+        display: none;
+      }
+      @media (max-width: 420px) {
+        body {
+          padding: 18px;
+        }
+        h1 {
+          font-size: 24px;
+        }
+        ul {
+          display: block;
+        }
+        li {
+          margin-bottom: 8px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          animation: none !important;
+          transition: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>✧ LIFE RPG · 모험의 서</header>
+    <p id="status" role="status" aria-live="polite">
+      대화에서 전달되는 결과를 기다리고 있습니다.
+    </p>
+    <h1 id="title">다음 페이지를 펼치는 중</h1>
+    <div id="scene"></div>
+    <ul id="changes" aria-label="확정된 변화"></ul>
+    <p id="question"></p>
+    <details id="details">
+      <summary>이야기 자세히 펼치기</summary>
+      <div id="detail"></div>
+    </details>
+    <div class="actions">
+      <button id="refresh" disabled>저장된 결과 조회</button
+      ><a
+        id="web"
+        href="https://liferpg.spiritflag.work/"
+        target="_blank"
+        rel="noopener noreferrer"
+        >웹에서 이어 보기 ↗</a
+      >
+    </div>
+    <small id="hint"
+      >펼치기와 조회는 현실 과업을 완료하거나 세계를 진행하지 않습니다.</small
+    >
+    <script>
+      // Standalone MCP Apps view. No tokens, user records, cookies or external assets.
+      (() => {
+        "use strict";
+        let seq = 0,
+          ready = false,
+          capabilities = {},
+          pending = false,
+          polls = 0,
+          timer = null,
+          visible = true;
+        const calls = new Map(),
+          $ = (id) => document.getElementById(id);
+        const states = {
+          waiting:
+            "경험이 접수되었습니다. 앞선 반영 뒤에 이어 처리할 수 있습니다.",
+          running: "경험을 이야기에 반영하고 있습니다.",
+          failed: "판정이 실패했습니다. 기록 접수와 게임 반영은 별개입니다.",
+          interrupted:
+            "처리가 중단되었습니다. 웹에서 상태를 확인하고 다시 시도할 수 있습니다.",
+          budget_blocked: "경험은 접수되었고 판정은 예산 부족으로 멈췄습니다.",
+          committed: "저장된 확정 결과입니다.",
+          deleted: "삭제된 기록입니다.",
+        };
+        function notify(method, params) {
+          if (window.parent !== window)
+            window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+        }
+        function request(method, params) {
+          return new Promise((resolve, reject) => {
+            const id = ++seq;
+            const timeout = setTimeout(() => {
+              calls.delete(id);
+              reject(new Error("host timeout"));
+            }, 10000);
+            calls.set(id, { resolve, reject, timeout });
+            window.parent.postMessage(
+              { jsonrpc: "2.0", id, method, params },
+              "*",
+            );
+          });
+        }
+        function size() {
+          if (ready)
+            notify("ui/notifications/size-changed", {
+              height: document.body.scrollHeight,
+              width: document.documentElement.clientWidth,
+            });
+        }
+        function stop() {
+          clearTimeout(timer);
+          timer = null;
+        }
+        function schedule() {
+          stop();
+          if (
+            ready &&
+            capabilities.serverTools &&
+            pending &&
+            visible &&
+            document.visibilityState === "visible" &&
+            polls < 5
+          )
+            timer = setTimeout(() => {
+              polls++;
+              void read();
+            }, 8000);
+        }
+        function show(result) {
+          const d = result?.structuredContent;
+          if (!d || typeof d !== "object") {
+            if (result?.isError)
+              $("status").textContent =
+                "결과를 읽지 못했습니다. 웹에서 저장 상태를 확인해 주세요.";
+            return;
+          }
+          const snapshot = Array.isArray(d.results);
+          const r = snapshot
+            ? d.results[0]
+            : (d.playerResult ?? (typeof d.scene === "string" ? d : null));
+          const jobs = snapshot ? (Array.isArray(d.jobs) ? d.jobs : []) : [d];
+          pending = jobs.some((j) => j.judgmentStatus === "running");
+          const active = jobs.find(
+            (j) => j.judgmentStatus && j.judgmentStatus !== "committed",
+          );
+          $("status").textContent = active
+            ? (states[active.judgmentStatus] ?? "저장 상태를 확인해 주세요.") +
+              (snapshot && d.unprocessedCount
+                ? ` · 미처리 ${d.unprocessedCount}건`
+                : "")
+            : r
+              ? "저장된 확정 결과입니다."
+              : "아직 확정된 모험 기록이 없습니다.";
+          $("title").textContent =
+            r?.title ??
+            (active ? "아직 이어지는 이야기" : "첫 이야기를 기다리며");
+          const scene = typeof r?.scene === "string" ? r.scene : "";
+          $("scene").textContent =
+            scene.length > 280 ? scene.slice(0, 280) + "…" : scene;
+          $("detail").textContent = scene;
+          $("details").hidden = !scene;
+          $("changes").replaceChildren();
+          for (const value of Array.isArray(r?.changes) ? r.changes : []) {
+            if (typeof value !== "string") continue;
+            const li = document.createElement("li");
+            li.textContent = "✦ " + value;
+            $("changes").append(li);
+          }
+          $("question").textContent = r?.question
+            ? "확인이 필요해요 · " + r.question
+            : "";
+          if (d.recordStatus)
+            $("status").textContent +=
+              d.recordStatus === "recorded"
+                ? " · 현실 기록 저장됨"
+                : d.recordStatus === "pending"
+                  ? " · 현실 기록 여부 미확정"
+                  : "";
+          schedule();
+          size();
+        }
+        async function read() {
+          if (!ready || !capabilities.serverTools) return;
+          $("refresh").disabled = true;
+          try {
+            show(
+              await request("tools/call", {
+                name: "get_player_context",
+                arguments: {},
+              }),
+            );
+          } catch {
+            $("status").textContent =
+              "조회 연결을 확인해 주세요. 이미 접수된 작업을 다시 등록할 필요는 없습니다.";
+            stop();
+          } finally {
+            $("refresh").disabled = false;
+          }
+        }
+        window.addEventListener("message", (event) => {
+          if (event.source !== window.parent) return;
+          const m = event.data;
+          if (!m || m.jsonrpc !== "2.0") return;
+          if (m.id && calls.has(m.id)) {
+            const c = calls.get(m.id);
+            clearTimeout(c.timeout);
+            calls.delete(m.id);
+            m.error
+              ? c.reject(new Error(m.error.message))
+              : c.resolve(m.result);
+            return;
+          }
+          if (m.method === "ui/notifications/tool-result") show(m.params);
+          if (m.method === "ui/notifications/tool-cancelled") {
+            $("status").textContent =
+              "처리가 취소되었습니다. 웹에서 접수 상태를 확인할 수 있습니다.";
+            pending = false;
+            stop();
+          }
+          if (m.method === "ui/notifications/host-context-changed") {
+            visible = m.params?.displayMode !== "hidden";
+            schedule();
+          }
+          if (m.method === "ui/resource-teardown") {
+            ready = false;
+            pending = false;
+            stop();
+            window.parent.postMessage(
+              { jsonrpc: "2.0", id: m.id, result: {} },
+              "*",
+            );
+          }
+        });
+        $("refresh").addEventListener("click", () => void read());
+        $("details").addEventListener("toggle", size);
+        $("web").addEventListener("click", (e) => {
+          if (ready && capabilities.openLinks) {
+            e.preventDefault();
+            request("ui/open-link", { url: $("web").href }).catch(() => {
+              $("status").textContent =
+                "웹 링크를 열 수 없습니다. 링크를 새 창으로 열어 주세요.";
+            });
+          }
+        });
+        document.addEventListener("visibilitychange", schedule);
+        new IntersectionObserver((entries) => {
+          visible = entries.some((e) => e.isIntersecting);
+          schedule();
+        }).observe(document.body);
+        if (window.parent !== window)
+          request("ui/initialize", {
+            appInfo: { name: "LifeRPG result", version: "1.0.0" },
+            appCapabilities: { availableDisplayModes: ["inline"] },
+            protocolVersion: "2026-01-26",
+          })
+            .then((r) => {
+              capabilities = r.hostCapabilities ?? {};
+              ready = true;
+              notify("ui/notifications/initialized", {});
+              $("refresh").disabled = !capabilities.serverTools;
+              size();
+              schedule();
+            })
+            .catch(() => {
+              $("status").textContent =
+                "이 환경에서는 대화형 결과 연결을 사용할 수 없습니다. 웹 링크에서 모험을 확인하세요.";
+            });
+        else {
+          $("status").textContent =
+            "MCP host 안에서 도구 결과를 수신하는 정적 화면입니다. 개인 데이터는 포함되어 있지 않습니다.";
+        }
+      })();
+    </script>
+  </body>
+</html>
