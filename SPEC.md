@@ -93,9 +93,11 @@ GM은 공식 OpenAI Responses API의 `gpt-6.1-sol`, reasoning `medium`, tier `de
 | 실제 Sol → Neon | `exp-20261015-birth-01`: 합성 principal로 실제 Sol HTTP 200·completed, 계약 검증, 레벨 1·XP 0·revision 1 저장 및 재조회. 약 33초. Clerk/MCP HTTP를 통과한 실험은 아니다. |
 | 비용 증거 | 위 실험 usage input 1,093 / output 1,349, 보수적 누적 $0.018409, 예약 잔액 0. 실제 공급자 청구 확정값과 구분. |
 | 실제 token-count API | 883 tokens 반환 확인. 모델 추론 성공 실험과 별도. |
-| 실제 Clerk | 새 개발 인스턴스 BAPI 발급 세션 검증·변조 거부·세션을 OAuth로 사용 시 거부·테스트 세션 폐기. 사용자 브라우저의 이메일 코드 로그인은 별도 검증 대상. |
+| 실제 Clerk/OAuth와 로컬 HTTP | 새 개발 인스턴스의 합성 시험사용자로 이메일 OTP·동의·PKCE S256을 거쳐 실제 scoped OAuth token 발급. 공식 SDK와 실제 인증 모듈의 audience/owner/client/scope·변조 검증, 로컬 HTTP MCP 읽기 200와 Neon 미시작 상태, 별도 웹 세션 조회 200, OAuth→웹 및 웹 세션→MCP 교차 사용 401을 확인. Naver 실사용자 OTP와 ChatGPT 연결은 별도 검증 대상. |
 | 합성 실패·실제 DB | 잘못된 형식·refusal·incomplete, 중복·동시성·FIFO·이어 처리, lease 만료, 늦은 응답, 강제 기록·정정·삭제, 비공개 투영, 현실 퀘스트 완료근거, 월/누적 cap, 과금 불명 예약, 진단 만료를 격리 Neon에서 검증. 모델 응답은 주입한 것이다. |
 | 화면과 카드 | 새 Chromium context의 1440/390px 화면, 긴/빈/대기 상태, 12개 가변 능력, 키보드 dialog, 수정·삭제 UI 연결, 안전한 텍스트, 합성 MCP bridge·펼치기·가시성별 조회를 검증. 실제 ChatGPT host 및 실물 모바일 검증은 아니다. |
+
+실토큰 검증에서 Clerk의 BAPI 반환값에 `type`이 생략되는 것을 확인했다. 전용 OAuth verifier가 검증한 결과에서만 생략을 허용하고, 명시적으로 다른 type이 있거나 audience·만료·소유자·client·scope가 맞지 않으면 거부한다. 모의 응답과 실제 응답 형식의 차이를 수정한 사례다. 독립 검수는 이 변경과 기존 P1/P2, 삭제 후 수치 보존·늦은 응답·다음 입력의 삭제 정보 부재를 재확인했고 미해결 중대 결함을 보고하지 않았다.
 
 실제 OAuth scoped token → MCP → Sol → 저장 → 웹 재조회, 배포된 `after()`의 완료, 사용자 ChatGPT 연결·프로젝트·모바일 제공 여부와 자연스러운 버디 사용감은 연결 검증 진행 중이다. 최종 인수 전에 이 표를 실제 결과로 갱신한다. 내부 세부 증거는 비공개 `.local/` 아래에 두며 공개 저장소에 올리지 않는다.
 
