@@ -14,7 +14,7 @@ export interface PlayerSnapshot { revision: number; worldSequence: number; start
 
 export const commandSchema = z.object({
   // Tombstones retain this identifier after deletion: never accept prose as a key.
-  requestKey: z.string().regex(/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|exp-\d{8}-(?:birth|mcp|vercel)-\d{2})$/i),
+  requestKey: z.string().regex(/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|exp-\d{8}-(?:birth|mcp|vercel)-\d{2})$/i).describe('Generate an opaque UUID for a new request; reuse the exact UUID only for transport replay. Never put names or reality facts in this key. exp-* keys are reserved for coordinator experiments.'),
   expectedRevision: z.number().int().nonnegative(),
   kind: z.enum(['start','experience','force_record','correct','quest','quest_update','answer','appeal']),
   text,

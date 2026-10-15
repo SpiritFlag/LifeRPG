@@ -50,7 +50,7 @@ function createServer(principal: McpPrincipal) {
   }, async () => invoke('life:read', () => readPlayer(principal.ownerId)));
   server.registerTool('submit_life_command', {
     title: 'Record an adventure event',
-    description: 'Start only on explicit request, or submit confirmed real experiences, corrections, explicit force-record requests, consented quests, answers and appeals. Never treat plans, jokes, guesses or other people’s actions as completed experiences. Reuse a requestKey only for the exact same command. Quest registration and button clicks are not completion evidence.',
+    description: 'Start only on explicit request, or submit confirmed real experiences, corrections, explicit force-record requests, consented quests, answers and appeals. Generate an opaque UUID requestKey for each new request, reuse that exact UUID only for transport replay, and never put names or facts in the key. Never treat plans, jokes, guesses or other people’s actions as completed experiences. Quest registration and button clicks are not completion evidence.',
     inputSchema: commandSchema.shape,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }, _meta: security('life:write'),
   }, async input => invoke('life:write', () => submitCommand(principal.ownerId, commandSchema.parse(input))));
