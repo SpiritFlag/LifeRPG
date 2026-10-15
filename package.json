@@ -1,0 +1,42 @@
+{
+  "name": "liferpg",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "test:db": "tsx --test tests/db.integration.ts",
+    "experiment": "tsx scripts/experiment.ts"
+  },
+  "dependencies": {
+    "@clerk/mcp-tools": "0.6.0",
+    "@clerk/nextjs": "7.9.15",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@neondatabase/serverless": "1.2.0",
+    "drizzle-orm": "0.45.4",
+    "mcp-handler": "2.3.0",
+    "next": "16.4.1",
+    "openai": "7.34.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "server-only": "0.0.1",
+    "ws": "8.22.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/ws": "8.18.2",
+    "dotenv": "18.0.8",
+    "drizzle-kit": "0.31.11",
+    "tailwindcss": "4.3.3",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}
