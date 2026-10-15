@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { config } from 'dotenv';
 import { sql } from 'drizzle-orm';
 import { getDB,useDatabaseForTest,closeDatabase,rows,type SqlDB } from '../src/server/db';
-import { submitCommand,readPlayer,continueJob,deleteEvent,useGMForTest } from '../src/server/service';
+import { submitCommand as submitRaw,readPlayer,continueJob as continueRaw,deleteEvent,useGMForTest } from '../src/server/service';
 import { inspectReceipt,type Receipt } from '../src/server/gm';
 import type { GMEnvelope,CommandInput } from '../src/lib/contracts';
 
@@ -15,6 +15,10 @@ let realDB:SqlDB, testDB:SqlDB;
 const owner=`synthetic_${randomUUID()}`;
 let calls=0;
 let gate:Promise<void>|null=null;
+const observed:Promise<void>[]=[];
+const observe=(promise:Promise<void>)=>{observed.push(promise);};
+async function submitCommand(...args:Parameters<typeof submitRaw>) {const result=await submitRaw(...args);if(result.judgmentStatus==='running'&&!gate){await Promise.all(observed);return (await readPlayer(args[0])).jobs.find(j=>j.jobId===result.jobId)!;}return result;}
+async function continueJob(...args:Parameters<typeof continueRaw>) {const result=await continueRaw(...args);if(result.judgmentStatus==='running'&&!gate){await Promise.all(observed);return (await readPlayer(args[0])).jobs.find(j=>j.jobId===result.jobId)!;}return result;}
 const envelope:GMEnvelope={contractVersion:'liferpg.1',decision:'apply',recordAccepted:true,question:null,title:'합성 수신 검증',scene:'합성 장면',changes:['합성 변화'],level:1,totalXp:0,alive:true,abilities:[],entities:[{id:'hero',kind:'character',name:'합성 여행자',summary:'합성 탄생',detail:'합성 본문',visibility:'public',truth:'canon',relatedIds:[],quantity:null,status:null,attributes:[],realTaskId:null}],questCompletions:[],rationale:'GM_SECRET_SYNTHETIC',memories:[{id:'identity',kind:'identity',content:'GM_SECRET_SYNTHETIC',reason:'합성 기억',previousId:null,important:true,relatedIds:[]}]};
 let nextEnvelope=envelope,broken=false,usageKnown=true;
 const syntheticAdapter=async()=>{calls++;if(gate)await gate;return receipt();};
@@ -27,7 +31,7 @@ before(async()=>{
   const migration=await readFile(new URL('../migrations/0001_initial.sql',import.meta.url),'utf8');
   await testDB.transaction(async tx=>{for(const command of migration.split(';').filter(s=>s.trim())) await rows(tx,command);});
   process.env.OWNER_CLERK_USER_ID=owner;process.env.GM_PAID_CALLS_ENABLED='true';process.env.OPENAI_API_KEY='synthetic-not-a-network-call';process.env.DIAGNOSTIC_ENCRYPTION_KEY=Buffer.alloc(32,1).toString('base64');process.env.GM_BUDGET_SCOPE='synthetic';
-  useGMForTest(syntheticAdapter,()=>{});
+  useGMForTest(syntheticAdapter,observe);
 });
 after(async()=>{useDatabaseForTest(realDB);await realDB.execute(sql.raw(`DROP SCHEMA ${schema} CASCADE`));await closeDatabase();});
 test('Neon DB boundary: receipt, atomic commit, read, idempotency and privacy projection',async()=>{
@@ -45,7 +49,7 @@ test('Neon DB boundary: two concurrent claims, waiting order and explicit contin
   for(let i=0;i<50;i++){if((await readPlayer(owner)).jobs.some(j=>j.judgmentStatus==='running'))break;await new Promise(r=>setTimeout(r,20));}
   const b=await submitCommand(owner,cmd('experience',1));assert.equal(b.judgmentStatus,'waiting');assert.ok(b.predecessorJobId);
   await Promise.all([continueJob(owner,b.jobId),continueJob(owner,b.jobId)]);assert.equal(calls,2);
-  release();gate=null;await a;
+  release();gate=null;await a;await Promise.all(observed);
   const before=calls;await readPlayer(owner);assert.equal(calls,before);
   const done=await continueJob(owner,b.jobId);assert.equal(done.judgmentStatus,'committed');assert.equal(calls,3);
   assert.equal((await readPlayer(owner)).revision,3);
@@ -66,7 +70,7 @@ test('Neon DB boundary: deletion revokes late commit and forbids diagnostic rege
   const command=cmd('experience',revision), running=submitCommand(owner,command);
   let job:Awaited<ReturnType<typeof readPlayer>>['jobs'][number]|undefined;
   for(let i=0;i<50;i++){job=(await readPlayer(owner)).jobs.find(j=>j.judgmentStatus==='running');if(job)break;await new Promise(r=>setTimeout(r,20));}
-  assert.ok(job);const result=await deleteEvent(owner,job.eventId!);broken=true;release();gate=null;await running;broken=false;
+  assert.ok(job);const result=await deleteEvent(owner,job.eventId!);broken=true;release();gate=null;await running;await Promise.all(observed);broken=false;
   const snapshot=await readPlayer(owner);assert.equal(snapshot.revision,result.revision);assert.equal(snapshot.jobs.find(j=>j.jobId===job!.jobId)?.judgmentStatus,'deleted');
   const attempt=(await testDB.transaction(tx=>rows<{diagnostic:unknown;metadata:unknown}>(tx,'SELECT * FROM attempts WHERE job_id=$1',[job!.jobId])))[0];
   assert.equal(attempt.diagnostic,null);assert.deepEqual(attempt.metadata,{});
@@ -75,20 +79,20 @@ test('Neon DB boundary: deletion revokes late commit and forbids diagnostic rege
 test('Neon DB boundary: transitive input provenance purges GM memory and current mixed state text',async()=>{
   const snapshot=await readPlayer(owner), first=snapshot.events.find(e=>e.text.includes('SYNTHETIC_FACT') && snapshot.jobs.some(j=>j.eventId===e.id && j.revision && j.judgmentStatus==='committed' && j.jobId===snapshot.jobs[0].jobId));assert.ok(first);
   const deleted=await deleteEvent(owner,first.id);assert.ok(deleted.invalidatedIds.length>1);
-  const after=await readPlayer(owner);assert.equal(after.entities.length,0);assert.equal(after.totalXp,snapshot.totalXp);
+  const after=await readPlayer(owner);assert.equal(after.entities.filter(e=>e.kind!=='character').length,0);assert.ok(after.character);assert.notEqual(after.character.name,snapshot.character?.name);assert.equal(after.totalXp,snapshot.totalXp);
   const memory=await testDB.transaction(tx=>rows(tx,"SELECT id FROM records WHERE kind='identity' AND deleted=false"));assert.equal(memory.length,0);
 });
 test('Neon DB boundary: exact count failure/overflow releases reservation without calling model',async()=>{
   const before=calls;
-  useGMForTest(syntheticAdapter,()=>{},async()=>32001);
+  useGMForTest(syntheticAdapter,observe,async()=>32001);
   const revision=(await readPlayer(owner)).revision;
   const result=await submitCommand(owner,cmd('force_record',revision));
   assert.equal(result.judgmentStatus,'failed');assert.equal(result.errorCode,'GM_INPUT_TOKEN_LIMIT');assert.equal(calls,before);
   const attempt=(await testDB.transaction(tx=>rows<{charge_status:string}>(tx,'SELECT * FROM attempts WHERE job_id=$1',[result.jobId])))[0];assert.equal(attempt.charge_status,'not_called');
   await deleteEvent(owner,result.eventId!);
-  useGMForTest(syntheticAdapter,()=>{},async()=>{throw new Error('synthetic count unavailable');});
+  useGMForTest(syntheticAdapter,observe,async()=>{throw new Error('synthetic count unavailable');});
   const failure=await submitCommand(owner,cmd('force_record',(await readPlayer(owner)).revision));assert.equal(failure.errorCode,'TOKEN_COUNT_FAILED');assert.equal(calls,before);
-  await deleteEvent(owner,failure.eventId!);useGMForTest(syntheticAdapter,()=>{});
+  await deleteEvent(owner,failure.eventId!);useGMForTest(syntheticAdapter,observe);
 });
 test('Neon DB boundary: unknown billing preserves reservation and budget refusal preserves record',async()=>{
   usageKnown=false;
@@ -112,11 +116,11 @@ test('Neon DB boundary: reality quest completed state cannot bypass evidence lis
   useGMForTest(async input=>{
     calls++;const eventId=(input as {eventId:string}).eventId;
     nextEnvelope={...envelope,entities:[...envelope.entities,{id:'real-quest',kind:'quest',name:'동의 과업',summary:'합성',detail:'합성',visibility:'public',truth:'canon',relatedIds:[],quantity:null,status:'completed',attributes:[],realTaskId:eventId}],questCompletions:[]};return receipt();
-  },()=>{});
+  },observe);
   const result=await submitCommand(owner,cmd('quest',(await readPlayer(owner)).revision,{consent:{task:'합성 task',completionCondition:'실제 수행',context:'동의한 합성 맥락',recurrence:null}}));
   assert.equal(result.judgmentStatus,'failed');assert.equal(result.errorCode,'QUEST_COMPLETION_NEEDS_REAL_EVIDENCE');assert.equal(result.recordStatus,'recorded');
   assert.ok(!(await readPlayer(owner)).entities.some(e=>e.id==='real-quest'));
-  await deleteEvent(owner,result.eventId!);nextEnvelope=envelope;useGMForTest(syntheticAdapter,()=>{});
+  await deleteEvent(owner,result.eventId!);nextEnvelope=envelope;useGMForTest(syntheticAdapter,observe);
 });
 test('Neon DB boundary: declined fact and derivatives are purged, explicit force-record can store new fact',async()=>{
   nextEnvelope={...envelope,recordAccepted:false};
@@ -139,4 +143,15 @@ test('Neon DB boundary: correction projects newest record status and deletes old
     assert.ok(!JSON.stringify(persisted).includes('SYNTHETIC_OLD_FACT'));
     await deleteEvent(correctionOwner,original.eventId!);assert.equal((await readPlayer(correctionOwner)).events.length,0);
   } finally {process.env.OWNER_CLERK_USER_ID=owner;}
+});
+test('Neon DB boundary: deletion preserves numeric abilities, public item quantities and neutral character without source sentinels',async()=>{
+  const numericOwner=`numeric_${randomUUID()}`;process.env.OWNER_CLERK_USER_ID=numericOwner;
+  try {
+    const item=(id:string,quantity:number|null,visibility:'public'|'secret'='public'):GMEnvelope['entities'][number]=>({id,kind:'item',name:`DELETE_SENTINEL_${id}`,summary:'DELETE_SENTINEL_SUMMARY',detail:'DELETE_SENTINEL_DETAIL',quantity,visibility,truth:'canon',relatedIds:[],status:'equipped',attributes:[{name:'DELETE_SENTINEL_ATTRIBUTE',value:'DELETE_SENTINEL_VALUE'}],realTaskId:null});
+    nextEnvelope={...envelope,abilities:[{id:'DELETE_SENTINEL_ABILITY',name:'DELETE_SENTINEL_NAME',value:7,meaning:'DELETE_SENTINEL_MEANING',changeReason:null}],entities:[{...envelope.entities[0],name:'DELETE_SENTINEL_CHARACTER'},item('DELETE_SENTINEL_STACK',5),item('DELETE_SENTINEL_UNCOUNTED',null),item('DELETE_SENTINEL_SECRET',99,'secret')]};
+    const birth=await submitCommand(numericOwner,cmd('start',0,{text:'DELETE_SENTINEL_REALITY'}));assert.equal(birth.judgmentStatus,'committed');const beforeCalls=calls;
+    await deleteEvent(numericOwner,birth.eventId!);
+    const state=await readPlayer(numericOwner);assert.equal(calls,beforeCalls);assert.ok(state.character);assert.equal(state.level,1);assert.equal(state.totalXp,0);assert.deepEqual(state.abilities.map(a=>a.value),[7]);
+    const items=state.entities.filter(e=>e.kind==='item');assert.deepEqual(items.map(e=>e.quantity),[5,null]);assert.ok(items.every(e=>e.status===null&&e.relatedIds.length===0&&e.attributes?.length===0));assert.ok(!JSON.stringify(state).includes('DELETE_SENTINEL'));assert.ok(state.abilities.every(a=>a.id!=='DELETE_SENTINEL_ABILITY'));
+  } finally {process.env.OWNER_CLERK_USER_ID=owner;nextEnvelope=envelope;}
 });

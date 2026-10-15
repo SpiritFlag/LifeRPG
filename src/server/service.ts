@@ -10,7 +10,12 @@ interface Game {owner:string;revision:number;privacy_epoch:number;world_sequence
 interface Job {id:string;owner:string;request_key:string;fingerprint:string|null;command:CommandInput|null;kind:CommandInput['kind'];event_id:string|null;status:JobDTO['judgmentStatus'];record_status:JobDTO['recordStatus'];result_id:string|null;error_code:string|null;created_at:Date;}
 interface RecordRow {id:string;owner:string;kind:string;version:number;payload:Record<string,unknown>|null;sources:string[];important:boolean;deleted:boolean;created_at:Date;}
 interface Attempt {id:string;job_id:string;owner:string;base_revision:number;privacy_epoch:number;lease_until:Date;sources:string[];metadata:Record<string,unknown>;reservation:string;charge_status:string;month:string;budget_keys:string[];}
-const EMPTY_STATE:GameState={level:1,totalXp:0,abilities:[],entities:[]};
+export function privacySafeState(state:GameState,preserveCharacter:boolean):GameState {
+  const neutral=(kind:'character'|'item',name:string,summary:string,detail:string,quantity:number|null):GameState['entities'][number]=>({id:randomUUID(),kind,name,summary,detail,quantity,visibility:'public',truth:'canon',relatedIds:[],status:null,attributes:[],realTaskId:null});
+  const character=preserveCharacter?[neutral('character','안개 여행자','빛과 안개가 얽힌 형상이 발걸음을 이어갑니다.','아직 이름 없는 여행자가 눈앞의 새로운 길을 바라봅니다.',null)]:[];
+  const items=state.entities.filter(e=>e.kind==='item'&&e.visibility==='public').map((e,index)=>neutral('item',`이름 없는 유물 ${index+1}`,'새 이름을 기다리는 물건','이 물건의 이야기는 앞으로의 모험에서 새로 쓰입니다.',e.quantity));
+  return {level:state.level,totalXp:state.totalXp,abilities:state.abilities.map((ability,index)=>({id:randomUUID(),name:`무명의 힘 ${index+1}`,value:ability.value,meaning:'아직 이름을 얻지 않은 가능성',changeReason:null})),entities:[...character,...items]};
+}
 const pendingStatuses=['waiting','running','failed','interrupted','budget_blocked'];
 let gmAdapter: (input:unknown)=>Promise<Receipt> = callGM;
 let tokenCounter:(input:unknown)=>Promise<number> = countGMInput;
@@ -313,8 +318,8 @@ async function redactDerived(tx:SqlDB,g:Game,eventId:string,deleteRoot:boolean):
   await rows(tx,"UPDATE jobs SET status='interrupted',error_code='PRIVACY_EPOCH_CHANGED' WHERE owner=$1 AND status='running'",[g.owner]);
   await rows(tx,"UPDATE jobs SET command=NULL,fingerprint=NULL,status='deleted',record_status='deleted',result_id=NULL,error_code=NULL WHERE owner=$1 AND (event_id=$2 OR result_id=ANY($3::text[]) OR command->>'targetId'=ANY($3::text[]))",[g.owner,eventId,ids]);
   await rows(tx,"UPDATE attempts SET diagnostic=NULL,diagnostic_expires=NULL,metadata='{}'::jsonb,sources=ARRAY[]::text[],charge_status=CASE WHEN charge_status='reserved' THEN 'unknown' ELSE charge_status END WHERE owner=$1 AND ($2=ANY(sources) OR id=$3)",[g.owner,eventId,g.active_attempt]);
-  // Current state is a mixed summary: discard text wholesale if this fact reached it. Preserve only numerical growth.
-  const state=g.state_sources.includes(eventId)?{...EMPTY_STATE,level:g.state.level,totalXp:g.state.totalXp}:g.state;
+  // Mixed labels/links cannot safely survive. Preserve values and public item presence with unrelated neutral fiction.
+  const state=g.state_sources.includes(eventId)?privacySafeState(g.state,!!g.started_at||g.state.entities.some(e=>e.kind==='character'&&e.visibility==='public')):g.state;
   const retainedSources=g.state_sources.includes(eventId)?[]:g.state_sources;
   g.revision++;g.privacy_epoch++;g.active_attempt=null;g.state=state;g.state_sources=retainedSources;
   await rows(tx,'UPDATE games SET revision=$1,privacy_epoch=$2,active_attempt=NULL,state=$3::jsonb,state_sources=$5::text[] WHERE owner=$4',[g.revision,g.privacy_epoch,json(state),g.owner,retainedSources]);
