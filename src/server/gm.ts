@@ -87,9 +87,11 @@ export function validateMeaning(next: GMEnvelope, old: GameState, command: Comma
     const before = old.abilities.find(a=>a.id===ability.id);
     if(before && ability.value<before.value && !ability.changeReason?.trim()) throw new ServiceError('ABILITY_DECREASE_NEEDS_REASON',422);
   }
+  if(old.abilities.some(before=>!next.abilities.some(after=>after.id===before.id))) throw new ServiceError('ABILITY_REMOVAL_NOT_ALLOWED',422);
   const byId = new Map(next.entities.map(e=>[e.id,e]));
   for(const entity of next.entities) for(const id of entity.relatedIds) {
     if(!byId.has(id) || (entity.visibility==='public' && byId.get(id)?.visibility==='secret')) throw new ServiceError('PRIVATE_OR_MISSING_REFERENCE',422);
   }
+  if(next.decision==='apply'&&next.entities.filter(e=>e.kind==='character'&&e.visibility==='public').length!==1) throw new ServiceError('PUBLIC_CHARACTER_REQUIRED',422);
   if(next.decision!=='apply' && !isDeepStrictEqual({level:next.level,totalXp:next.totalXp,abilities:next.abilities,entities:next.entities},old)) throw new ServiceError('NON_APPLY_STATE_CHANGE',422);
 }

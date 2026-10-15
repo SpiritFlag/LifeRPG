@@ -17,9 +17,12 @@ test('game invariants allow free content and reasoned ability decreases',()=>{
   assert.throws(()=>validateMeaning({...valid,totalXp:9},old,command),/XP_OR_LEVEL_DECREASE/);
   assert.throws(()=>validateMeaning({...valid,level:2},{...old,totalXp:0},{...command,kind:'start'}),/BIRTH_LEVEL_ONE/);
   assert.throws(()=>validateMeaning({...valid,totalXp:10,abilities:[{...old.abilities[0],value:4}]},old,command),/ABILITY_DECREASE_NEEDS_REASON/);
-  validateMeaning({...valid,totalXp:10,abilities:[{...old.abilities[0],value:4,changeReason:'확인된 현실의 변화'}]},old,command);
+  const character={id:'hero',kind:'character' as const,name:'자유로운 종족',summary:'',detail:'',visibility:'public' as const,truth:'canon' as const,relatedIds:[],quantity:null,status:null,attributes:[],realTaskId:null};
+  validateMeaning({...valid,totalXp:10,abilities:[{...old.abilities[0],value:4,changeReason:'확인된 현실의 변화'}],entities:[character]},old,command);
+  assert.throws(()=>validateMeaning({...valid,totalXp:10},old,command),/ABILITY_REMOVAL_NOT_ALLOWED/);
+  assert.throws(()=>validateMeaning(valid,{...old,totalXp:0,abilities:[]},command),/PUBLIC_CHARACTER_REQUIRED/);
   const secret={id:'s',kind:'lore' as const,name:'숨김',summary:'',detail:'',visibility:'secret' as const,truth:'canon' as const,relatedIds:[],quantity:null,status:null,attributes:[],realTaskId:null};
-  assert.throws(()=>validateMeaning({...valid,totalXp:10,entities:[secret,{...secret,id:'p',visibility:'public',relatedIds:['s']}]},old,command),/PRIVATE_OR_MISSING_REFERENCE/);
+  assert.throws(()=>validateMeaning({...valid,totalXp:10,abilities:old.abilities,entities:[secret,{...secret,id:'p',visibility:'public',relatedIds:['s']}]},old,command),/PRIVATE_OR_MISSING_REFERENCE/);
 });
 test('death and negative XP are schema errors; incomplete birth cannot commit',()=>{
   const provider=(value:unknown)=>inspectReceipt(JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(value)}]}]}),'synthetic',200);
