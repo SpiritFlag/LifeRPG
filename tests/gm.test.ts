@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { inspectReceipt,parseEnvelope,validateMeaning } from '../src/server/gm';
 import { encryptDiagnostic,decryptDiagnostic } from '../src/server/diagnostics';
 import type { GMEnvelope,CommandInput } from '../src/lib/contracts';
+import { commandSchema } from '../src/lib/contracts';
 const command:CommandInput={kind:'experience',text:'산책했다',requestKey:'test-key-123',expectedRevision:0,occurredAt:null,uncertainty:null,targetId:null,consent:null};
 const valid:GMEnvelope={contractVersion:'liferpg.1',decision:'apply',recordAccepted:true,question:null,title:'새벽',scene:'문이 열린다',changes:[],level:1,totalXp:0,alive:true,abilities:[],entities:[],questCompletions:[],rationale:'짧은 근거',memories:[]};
 test('synthetic provider failures retain request ID, usage and output structure before content parse',()=>{
@@ -35,4 +36,10 @@ test('failed response encryption and hard 24h access expiry',()=>{
   const encrypted=encryptDiagnostic('sensitive failed body');assert.ok(!JSON.stringify(encrypted).includes('sensitive'));
   assert.equal(decryptDiagnostic(encrypted,new Date(Date.now()+1000)),'sensitive failed body');
   assert.throws(()=>decryptDiagnostic(encrypted,new Date(Date.now()-1)),/DIAGNOSTIC_EXPIRED/);
+});
+test('retained request keys are opaque identifiers, not reality prose',()=>{
+  assert.ok(commandSchema.safeParse({...command,requestKey:'2c8dfd1a-05aa-49e6-9e44-4a38d5e336f1'}).success);
+  assert.ok(commandSchema.safeParse({...command,requestKey:'exp-20261015-vercel-03'}).success);
+  assert.ok(!commandSchema.safeParse({...command,requestKey:'private-reality-fact-as-request-key'}).success);
+  assert.ok(!commandSchema.safeParse({...command,requestKey:'민감한 현실 내용을 요청키에 넣음'}).success);
 });

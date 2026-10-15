@@ -13,7 +13,8 @@ export interface RealityRecord {id:string;kind:string;version:number;text:string
 export interface PlayerSnapshot { revision: number; worldSequence: number; startedAt: string|null; level: number; totalXp: number; character: PlayerEntity|null; abilities: Ability[]; entities: PlayerEntity[]; results: PlayerResult[]; jobs: JobDTO[]; events:RealityRecord[]; unprocessedCount: number; }
 
 export const commandSchema = z.object({
-  requestKey: z.string().min(8).max(160),
+  // Tombstones retain this identifier after deletion: never accept prose as a key.
+  requestKey: z.string().regex(/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|exp-\d{8}-(?:birth|mcp|vercel)-\d{2})$/i),
   expectedRevision: z.number().int().nonnegative(),
   kind: z.enum(['start','experience','force_record','correct','quest','quest_update','answer','appeal']),
   text,
