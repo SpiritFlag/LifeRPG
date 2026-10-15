@@ -15,10 +15,15 @@ async function main() {
   process.env.OWNER_CLERK_USER_ID=owner;
   const before=await readPlayer(owner);
   const existing=before.jobs[0];
+  if(existing) {
+    console.log(JSON.stringify({kind:'EXISTING_EXPERIMENT_NO_NEW_CALL',authorization,jobId:existing.jobId,status:existing.judgmentStatus,revision:before.revision}));
+    if(existing.judgmentStatus!=='committed')process.exitCode=1;
+    return; // Preserve the original timing/receipt evidence; never turn a replay into a paid retry.
+  }
   let pending:Promise<void>|null=null;
   useGMForTest(callGM,p=>{pending=p;},countGMInput);
   const started=Date.now();
-  const result=existing ?? await submitCommand(owner,{kind:'start',requestKey:authorization,expectedRevision:before.revision,text:'실연결 검증용 합성 플레이어가 오늘부터 새로운 캐릭터 탄생을 명시적으로 요청합니다. 실제 사용자 과거 기록은 없습니다.',occurredAt:null,uncertainty:null,targetId:null,consent:null});
+  const result=await submitCommand(owner,{kind:'start',requestKey:authorization,expectedRevision:before.revision,text:'실연결 검증용 합성 플레이어가 오늘부터 새로운 캐릭터 탄생을 명시적으로 요청합니다. 실제 사용자 과거 기록은 없습니다.',occurredAt:null,uncertainty:null,targetId:null,consent:null});
   if(pending) await pending;
   const snapshot=await readPlayer(owner);
   const evidence=await getDB().transaction(tx=>rows<{id:string;metadata:Record<string,unknown>;charge_status:string;reservation:string}>(tx,'SELECT id,metadata,charge_status,reservation FROM attempts WHERE job_id=$1 ORDER BY created_at',[result.jobId]));
