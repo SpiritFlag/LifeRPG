@@ -60,7 +60,7 @@ MCP는 웹 세션 대신 Clerk의 공식 OAuth access-token verify를 사용한�
 
 MCP 도구는 `get_player_context`, `submit_life_command`, `continue_life_job`, `delete_life_event`다. 서버 instructions에 대화 시작 시 현재 상태와 대기 작업 확인, 작은 결과 표현, 중복 사건 확인, 실제 과업 동의, 강제 기록·삭제 권리와 별도 RPG 행동 입력 금지를 전달한다. ChatGPT의 자동 도구 선택이나 모든 대화에서의 호출을 보장하지는 않는다.
 
-`ui://liferpg/player-result.html`은 `text/html;profile=mcp-app` 정적 resource다. 표준 host bridge로 인증된 읽기를 요청하고 공개 도구 결과로 렌더링한다. 토큰·개인 쿠키를 iframe payload에 넣지 않는다. 텍스트는 안전한 DOM 텍스트로 표시하며 짧은 장면·변화·상세 펼치기·웹 연결을 제공한다. 보이는 대기 카드만 제한적으로 조회하고, 숨겨진 카드나 조회 도구는 유료 판정을 시작하지 않는다.
+MCP 도구에는 자동 UI 표시를 연결하는 `_meta.ui.resourceUri`를 제공하지 않는다. 네 도구의 OAuth scope와 `content`·`structuredContent` 반환은 유지하며, ChatGPT에서는 버디가 반환 데이터로 결과를 표현한다. `ui://liferpg/player-result.html` 정적 resource는 남아 있지만 도구에 연결하지 않는다. 웹 RPG 화면은 이 변경과 무관하다.
 
 ## 비용과 진단
 
